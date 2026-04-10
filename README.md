@@ -16,51 +16,38 @@
 
 ## GENERAL PURPOSE REGISTERS
 
-8086 CPU has 8 general purpose registers, each register has its own name:
+-8086 CPU has 8 general purpose registers, each register has its own name:
+-AX - the accumulator register (divided into AH / AL).
+-BX - the base address register (divided into BH / BL).
+-CX - the count register (divided into CH / CL).
+-DX - the data register (divided into DH / DL).
+-SI - source index register.
+-DI - destination index register.
+-BP - base pointer.
+-SP - stack pointer.
 
-AX - the accumulator register (divided into AH / AL).
+-To access memory we can use these four registers: BX, SI, DI, BP.
 
-BX - the base address register (divided into BH / BL).
+-The value in segment register (CS, DS, SS, ES) is called a segment, and the value in general purpose register (BX, SI, DI, BP) is called an offset.
 
-CX - the count register (divided into CH / CL).
+-DB define byte - single value
+-DW define word - larger value
+-DD define doubleword
+-DQ define quadword
 
-DX - the data register (divided into DH / DL).
+-DATA_SEG        SEGMENT
+-	var_name 	type 	value
+-	A                	DB    	9
+-	MESSAGE        DB		'HELLOWORLD'   ;10 values (0-9)
+-DATA_SEG        ENDS
 
-SI - source index register.
-
-DI - destination index register.
-
-BP - base pointer.
-
-SP - stack pointer.
-
-To access memory we can use these four registers: BX, SI, DI, BP.
-
-The value in segment register (CS, DS, SS, ES) is called a segment, and the value in general purpose register (BX, SI, DI, BP) is called an offset.
-
-DB define byte - single value
-DW define word - larger value
-DD define doubleword
-DQ define quadword
-
-DATA_SEG        SEGMENT
-	var_name 	type 	value
-	A                	DB    	9
-	MESSAGE        DB		'HELLOWORLD'   ;10 values (0-9)
-DATA_SEG        ENDS
-
-$ = terminate string
-13,10 = \r\n
+-$ = terminate string
+-13,10 = \r\n
 
 Arrays in 8086
 
-name 	type 	value
-a		DB		22h, 23h, 24h, 25h
-				a[0], a[1], a[2], a[3]
+-name 	type 	value
+-a		DB		22h, 23h, 24h, 25h
+-				a[0], a[1], a[2], a[3]
 
 ---
-
-## Contributors
-- Karl Ardwin T. Eulin
-- Patrick Fernandez
-- Vhenz Angelo Fernandez
