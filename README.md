@@ -17,6 +17,7 @@
 ## GENERAL PURPOSE REGISTERS
 
 8086 CPU has 8 general purpose registers, each register has its own name:
+
 AX - the accumulator register (divided into AH / AL).
 
 BX - the base address register (divided into BH / BL).
