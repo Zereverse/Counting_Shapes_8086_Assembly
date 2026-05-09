@@ -8,7 +8,6 @@ msg         db "COUNT THE SHAPES", "$"
 m3          db "CIRCLE >", "$"
 m4          db "SQUARE >", "$"
 m5          db "TRIANGLE >", "$"
-inp_prompt  db "", "$"
 deadmsg     db "YOU DIED", "$"
 statsmsg    db "ROUND CLEAR", "$"
 time_label  db "TIME ", "$"
@@ -38,8 +37,6 @@ shape_list  db 6 dup(0)
 
 ; ===== BIT MAPS ======
 wallpaper_name db "./image/wall.bmp", 0
-login_page db "./image/Login_page.bmp", 0
-difficulty_page db "./image/Difficulty.bmp", 0
 
 ; ===== Menu strings =====
 menu_title  db "SHAPE GAME ARENA", "$"
@@ -47,7 +44,6 @@ menu_start  db "START", "$"
 menu_quit   db "QUIT", "$"
 menu_retry  db "PLAY AGAIN?", "$"
 retry_yes   db "YES", "$"
-crlf        db 0Dh, 0Ah, "$"
 x_positions dw 34, 124, 214
 y_positions dw 46, 92
 wallpaper_handle dw 0
@@ -98,50 +94,443 @@ digit_ptrs dw glyph_0,glyph_1,glyph_2,glyph_3,glyph_4,glyph_5,glyph_6,glyph_7,gl
 letter_ptrs dw glyph_A,glyph_B,glyph_C,glyph_D,glyph_E,glyph_F,glyph_G,glyph_H,glyph_I,glyph_J,glyph_K,glyph_L,glyph_M,glyph_N,glyph_O,glyph_P,glyph_Q,glyph_R,glyph_S,glyph_T,glyph_U,glyph_V,glyph_W,glyph_X,glyph_Y,glyph_Z
 
 ; ===== AUTHENTICATION =====
-credentials_file db "credentials.txt",0
-scoreboard_file  db "scoreboard.txt",0
+scoreboard_file db "scrboard.txt",0
 
-cred_handle dw ?
-score_handle dw ?
-
-username db 21 dup(0)
-password db 21 dup(0)
-confirm_password db 20 dup(0)
-
-file_buffer db 512 dup(0)
-bytes_read dw 0
+bytes_read dw ?
 
 
-input_buffer db 21,0,21 dup(0)
+current_user db 11 dup(0)
+user_exists db 0
 
-login_msg db "=== LOGIN ===$"
-signup_msg db "=== SIGNUP ===$"
+; [0] = max chars (10)
+; [1] = chars entered
+; [2...] = text (null terminated)
 
-user_prompt db "USERNAME: $"
-pass_prompt db "PASSWORD: $"
-confirm_prompt db "CONFIRM PASSWORD: $"
+input_buffer db 10
+             db 0
+             db 10 dup(0)
 
-user_not_found db "USER NOT FOUND$"
-pass_mismatch db "PASSWORDS DO NOT MATCH$"
+file_buffer db 1024 dup(0)
 
-login_success db "LOGIN SUCCESS$"
-signup_success db "SIGNUP SUCCESS$"
-
-default_admin db "admin,admin",13,10
-
-admin_user db "admin",0
-admin_pass db "admin",0
+title_text db "INSERT YOUR NAME:", "$"
+limit_text db "10 CHARS MAX.", "$"
+welcome_text db "WELCOME ", "$"
 
 .code
-; ===== TEMPORARY =====
-dos_print proc
 
-    mov ah, 09h
+init_scoreboard proc
+
+    mov ah, 3Dh
+    mov al, 0
+    mov dx, offset scoreboard_file
+    int 21h
+    jc create_file
+
+    ; close existing
+    mov bx, ax
+    mov ah, 3Eh
     int 21h
     ret
 
-dos_print endp
-; =====================
+create_file:
+
+    mov ah, 3Ch
+    mov cx, 0
+    mov dx, offset scoreboard_file
+    int 21h
+
+    mov bx, ax
+    mov ah, 3Eh
+    int 21h
+
+    ret
+
+init_scoreboard endp
+
+; ==========================================
+; LOGIN SCREEN
+; ==========================================
+
+login_screen proc
+
+    call set_video_mode
+    call cls
+
+    ; TITLE
+    mov dh, 8
+    mov dl, 10
+    call setcur
+    mov dx, offset title_text
+    call print
+
+    ; LIMIT TEXT
+    mov dh, 10
+    mov dl, 13
+    call setcur
+    mov dx, offset limit_text
+    call print
+
+    ; INPUT FIELD - position cursor and read
+    mov dh, 12
+    mov dl, 14
+    call setcur
+
+    call read_username
+
+    call copy_username
+
+    call check_user_exists
+
+    cmp user_exists, 1
+    je login_done
+
+    call append_new_user
+
+login_done:
+
+    call set_video_mode
+    call cls
+
+    mov dh, 12
+    mov dl, 13
+    call setcur
+    mov dx, offset welcome_text
+    call print
+
+    mov si, offset current_user
+login_welcome_loop:
+    mov al, [si]
+    cmp al, 0
+    je login_welcome_done
+    call draw_ui_char
+    inc si
+    jmp login_welcome_loop
+login_welcome_done:
+
+    ; pause ~1 second so player can read welcome
+    call get_time_cs
+    mov bx, ax
+login_pause:
+    call get_time_cs
+    cmp ax, bx
+    jae login_pause_nowrap
+    add ax, 6000
+login_pause_nowrap:
+    sub ax, bx
+    cmp ax, 100
+    jb  login_pause
+
+    ret
+
+login_screen endp
+
+; ==========================================
+; READ USERNAME  (graphics mode)
+; Reads up to 10 printable chars via BIOS
+; int 16h, echoes each with draw_ui_char
+; Backspace erases last char
+; Enter confirms
+; Result stored in input_buffer
+; ==========================================
+read_username proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; clear input_buffer count and text
+    mov byte ptr input_buffer+1, 0
+    mov cx, 10
+    mov si, offset input_buffer+2
+ru_clear:
+    mov byte ptr [si], 0
+    inc si
+    loop ru_clear
+
+ru_key_loop:
+    mov ah, 00h
+    int 16h                     ; wait for keypress -> AL=char, AH=scan
+
+    cmp al, 0Dh                 ; Enter
+    je  ru_done
+
+    cmp al, 08h                 ; Backspace
+    je  ru_backspace
+
+    ; only accept A-Z, a-z, 0-9
+    cmp al, '0'
+    jb  ru_key_loop
+    cmp al, '9'
+    jbe ru_accept
+    cmp al, 'A'
+    jb  ru_key_loop
+    cmp al, 'Z'
+    jbe ru_accept
+    cmp al, 'a'
+    jb  ru_key_loop
+    cmp al, 'z'
+    ja  ru_key_loop
+
+ru_accept:
+    ; enforce max 10 chars
+    mov bl, input_buffer+1
+    xor bh, bh
+    cmp bx, 10
+    jae ru_key_loop
+
+    ; uppercase if lowercase
+    cmp al, 'a'
+    jb  ru_no_upper
+    sub al, 20h
+ru_no_upper:
+
+    ; store char
+    mov si, offset input_buffer+2
+    add si, bx
+    mov [si], al
+
+    ; echo char via pixel renderer
+    call draw_ui_char
+
+    ; increment count
+    inc byte ptr input_buffer+1
+    jmp ru_key_loop
+
+ru_backspace:
+    mov bl, input_buffer+1
+    cmp bl, 0
+    je  ru_key_loop             ; nothing to erase
+
+    dec byte ptr input_buffer+1
+    mov bl, input_buffer+1
+    xor bh, bh
+
+    ; clear char in buffer
+    mov si, offset input_buffer+2
+    add si, bx
+    mov byte ptr [si], 0
+
+    ; erase pixel glyph: move cursor back one col, draw space
+    dec ui_col
+    mov al, ' '
+    call draw_ui_char
+    dec ui_col                  ; draw_ui_char advances col, step back again
+    jmp ru_key_loop
+
+ru_done:
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+read_username endp
+
+; ==========================================
+; COPY INPUT TO current_user
+; ==========================================
+copy_username proc
+
+    push si
+    push di
+    push cx
+
+    mov cl,input_buffer+1
+    xor ch,ch
+
+    mov si,offset input_buffer+2
+    mov di,offset current_user
+
+copy_loop:
+
+    cmp cx,0
+    je copy_done
+
+    mov al,[si]
+    mov [di],al
+
+    inc si
+    inc di
+
+    dec cx
+    jmp copy_loop
+
+copy_done:
+
+    mov byte ptr [di],0
+
+    pop cx
+    pop di
+    pop si
+
+    ret
+
+copy_username endp
+
+; ==========================================
+; CHECK IF USER EXISTS
+; ==========================================
+check_user_exists proc
+
+    mov user_exists,0
+
+    ; open file
+    mov ah,3Dh
+    mov al,0
+    mov dx,offset scoreboard_file
+    int 21h
+    jc done_check
+
+    mov bx,ax
+
+    ; read file
+    mov ah,3Fh
+    mov cx,1024
+    mov dx,offset file_buffer
+    int 21h
+
+    mov bytes_read,ax
+
+    ; close file
+    mov ah,3Eh
+    int 21h
+
+    ; search username
+    mov si,offset file_buffer
+    mov di,offset current_user
+
+search_loop:
+
+    mov al,[si]
+
+    cmp al,0
+    je done_check
+
+    cmp al,[di]
+    jne next_char
+
+    push si
+    push di
+
+compare_loop:
+
+    mov al,[si]
+    mov bl,[di]
+
+    cmp bl,0
+    je found_user
+
+    cmp al,bl
+    jne not_match
+
+    inc si
+    inc di
+    jmp compare_loop
+
+found_user:
+
+    mov user_exists,1
+
+not_match:
+
+    pop di
+    pop si
+
+next_char:
+
+    inc si
+    jmp search_loop
+
+done_check:
+
+    ret
+
+check_user_exists endp
+
+; ==========================================
+; FORMAT:
+; username,0
+; ==========================================
+append_new_user proc
+
+    ; open file write mode
+    mov ah,3Dh
+    mov al,1
+    mov dx,offset scoreboard_file
+    int 21h
+
+    mov bx,ax
+
+    ; move to EOF
+    mov ah,42h
+    mov al,2
+    xor cx,cx
+    xor dx,dx
+    int 21h
+
+    ; write username
+    mov si,offset current_user
+
+write_name:
+
+    mov al,[si]
+
+    cmp al,0
+    je write_comma
+
+    mov ah,40h
+    mov cx,1
+    mov dx,si
+    int 21h
+
+    inc si
+    jmp write_name
+
+write_comma:
+
+    mov dl,','
+    call write_char
+
+    mov dl,'0'
+    call write_char
+
+    mov dl,13
+    call write_char
+
+    mov dl,10
+    call write_char
+
+    ; close
+    mov ah,3Eh
+    int 21h
+
+    ret
+
+append_new_user endp
+
+; ==========================================
+; WRITE SINGLE CHAR
+; DL = char
+; ==========================================
+write_char proc
+
+    mov ah,40h
+    mov cx,1
+
+    push dx
+    mov dx,sp
+
+    int 21h
+
+    pop dx
+
+    ret
+
+write_char endp
 
 ; ======================
 ; print string (DX = offset of string)
@@ -187,274 +576,6 @@ skip_tens:
     ret
 print_num endp
 
-;=========================
-; FILE CREATION
-;=========================
-init_files proc
-
-    ; CHECK credentials.txt
-    mov ah, 3Dh
-    mov al, 00h
-    mov dx, offset credentials_file
-    int 21h
-    jc create_credentials
-
-    mov bx, ax
-    mov ah, 3Eh
-    int 21h
-    jmp check_scoreboard
-
-create_credentials:
-    mov ah, 3Ch
-    mov cx, 0
-    mov dx, offset credentials_file
-    int 21h
-
-    mov bx, ax
-    mov ah, 40h
-    mov dx, offset default_admin
-    mov cx, 13
-    int 21h
-
-    mov ah, 3Eh
-    int 21h
-
-check_scoreboard:
-
-    mov ah, 3Dh
-    mov al, 00h
-    mov dx, offset scoreboard_file
-    int 21h
-    jc create_scoreboard
-
-    mov bx, ax
-    mov ah, 3Eh
-    int 21h
-    ret
-
-create_scoreboard:
-
-    mov ah, 3Ch
-    mov cx, 0
-    mov dx, offset scoreboard_file
-    int 21h
-
-    mov bx, ax
-    mov ah, 3Eh
-    int 21h
-
-    ret
-
-init_files endp
-
-; =========================
-;  LOGIN AND SIGNUP SCREEN
-; =========================
-login_screen proc
-
-login_retry:
-
-    call set_text_mode
-
-    ; clear screen
-    mov ax, 0003h
-    int 10h
-
-    ; LOGIN TITLE
-    mov dx, offset login_msg
-    call dos_print
-
-    ; newline
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    ; USERNAME
-    mov dx, offset user_prompt
-    call dos_print
-
-    call read_string
-
-    mov si, offset username
-    call copy_input
-
-    ; newline
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    ; PASSWORD
-    mov dx, offset pass_prompt
-    call dos_print
-
-    call read_string
-
-    mov si, offset password
-    call copy_input
-
-    ; CHECK CREDENTIALS
-    call check_credentials
-
-    cmp al, 1
-    je login_ok
-
-    ; FAILED
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    mov dx, offset user_not_found
-    call dos_print
-
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    jmp login_retry
-
-login_ok:
-
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    mov dx, offset login_success
-    call dos_print
-
-    ret
-
-login_screen endp
-
-check_credentials proc
-
-    ; open credentials.txt
-
-    mov ah, 3Dh
-    mov al, 00h
-    mov dx, offset credentials_file
-    int 21h
-    jc cred_fail
-
-    mov bx, ax
-
-    ; read file
-
-    mov ah, 3Fh
-    mov cx, 512
-    mov dx, offset file_buffer
-    int 21h
-
-    mov bytes_read, ax
-
-    ; close file
-
-    mov ah, 3Eh
-    int 21h
-
-    ; TEMPORARY:
-    ; only checks admin/admin
-
-    mov si, offset username
-    mov di, offset admin_user
-    call strcmp
-
-    cmp al, 1
-    jne cred_fail
-
-    mov si, offset password
-    mov di, offset admin_pass
-    call strcmp
-
-    cmp al, 1
-    jne cred_fail
-
-    mov al, 1
-    ret
-
-cred_fail:
-    mov al, 0
-    ret
-
-check_credentials endp
-
-read_string proc
-
-    mov ah, 0Ah
-    mov dx, offset input_buffer
-    int 21h
-
-    ret
-
-read_string endp
-
-copy_input proc
-    ; SI = destination
-
-    push ax
-    push bx
-    push di
-
-    mov di, si
-
-    mov bl, input_buffer+1
-    xor bh, bh
-
-    mov si, offset input_buffer+2
-
-copy_loop:
-    cmp bx, 0
-    je copy_done
-
-    mov al, [si]
-    mov [di], al
-
-    inc si
-    inc di
-
-    dec bx
-    jmp copy_loop
-
-copy_done:
-    mov byte ptr [di], 0
-
-    pop di
-    pop bx
-    pop ax
-    ret
-
-copy_input endp
-
-strcmp proc
-    ; SI = string1
-    ; DI = string2
-    ; AL = 1 equal
-    ; AL = 0 not equal
-
-strcmp_loop:
-
-    mov ah, [si]
-    mov bl, [di]
-
-    cmp ah, bl
-    jne not_equal
-
-    cmp ah, 0
-    je equal
-
-    inc si
-    inc di
-    jmp strcmp_loop
-
-equal:
-    mov al, 1
-    ret
-
-not_equal:
-    mov al, 0
-    ret
-
-strcmp endp
-
 ; ======================
 ; random number 0-5 (result in AL)
 ; ======================
@@ -468,60 +589,6 @@ rand_0_5 proc
     mov al, ah
     ret
 rand_0_5 endp
-
-; ======================
-; randomize shape colors
-; ======================
-shuffle_shape_colors proc
-    call rand_0_5
-
-    cmp al, 0
-    je  colors_0
-    cmp al, 1
-    je  colors_1
-    cmp al, 2
-    je  colors_2
-    cmp al, 3
-    je  colors_3
-    cmp al, 4
-    je  colors_4
-
-colors_5:
-    mov circle_color, 13h
-    mov square_color, 12h
-    mov triangle_color, 11h
-    ret
-
-colors_0:
-    mov circle_color, 11h
-    mov square_color, 12h
-    mov triangle_color, 13h
-    ret
-
-colors_1:
-    mov circle_color, 11h
-    mov square_color, 13h
-    mov triangle_color, 12h
-    ret
-
-colors_2:
-    mov circle_color, 12h
-    mov square_color, 11h
-    mov triangle_color, 13h
-    ret
-
-colors_3:
-    mov circle_color, 12h
-    mov square_color, 13h
-    mov triangle_color, 11h
-    ret
-
-colors_4:
-    mov circle_color, 13h
-    mov square_color, 11h
-    mov triangle_color, 12h
-    ret
-shuffle_shape_colors endp
 
 ; ======================
 ; get current centiseconds within minute
@@ -1177,7 +1244,7 @@ cls proc
     mov dx, 0
     mov si, 320
     mov di, 200
-    mov al, 14h  ; cream background
+    mov al, 14h  
     call fill_rect
 
     mov ah, 02h
@@ -1723,42 +1790,9 @@ draw_menu_background proc
     call draw_wallpaper
     jc  menu_bg_fallback
 
-    mov cx, 18
-    mov dx, 18
-    mov si, 284
-    mov di, 50
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 58
-    mov dx, 96
-    mov si, 204
-    mov di, 26
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 58
-    mov dx, 128
-    mov si, 204
-    mov di, 26
-    mov al, 14h  ; cream
-    call draw_panel
     jmp menu_bg_done
 
 menu_bg_fallback:
-    mov cx, 18
-    mov dx, 18
-    mov si, 284
-    mov di, 50
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 48
-    mov dx, 86
-    mov si, 224
-    mov di, 72
-    mov al, 14h  ; cream
-    call draw_panel
 
     mov dh, 01h
     mov dl, 03h
@@ -1775,88 +1809,6 @@ menu_bg_done:
     ret
 draw_menu_background endp
 
-draw_game_background proc
-    push ax
-    push cx
-    push dx
-    push si
-    push di
-
-    call draw_wallpaper
-    jc  game_bg_fallback
-
-    mov cx, 8
-    mov dx, 8
-    mov si, 304
-    mov di, 22
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 18
-    mov dx, 38
-    mov si, 284
-    mov di, 100
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 18
-    mov dx, 146
-    mov si, 170
-    mov di, 46
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 196
-    mov dx, 146
-    mov si, 106
-    mov di, 46
-    mov al, 14h  ; cream
-    call draw_panel
-    jmp game_bg_done
-
-game_bg_fallback:
-    mov cx, 8
-    mov dx, 8
-    mov si, 304
-    mov di, 22
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 18
-    mov dx, 38
-    mov si, 284
-    mov di, 100
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 18
-    mov dx, 146
-    mov si, 170
-    mov di, 46
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov cx, 196
-    mov dx, 146
-    mov si, 106
-    mov di, 46
-    mov al, 14h  ; cream
-    call draw_panel
-
-    mov dh, 01h
-    mov dl, 03h
-    call setcur
-    mov dx, offset wall_fail_msg
-    call print
-
-game_bg_done:
-    pop di
-    pop si
-    pop dx
-    pop cx
-    pop ax
-    ret
-draw_game_background endp
 
 ; ======================
 ; show main menu
@@ -1972,9 +1924,9 @@ do_quit_r:
     ret
 show_retry endp
 
-; ======================
+; ========================================
 ; generate shapes and populate shape_list
-; ======================
+; ========================================
 gen_shapes proc
     mov totalShapes, 6
 
@@ -2068,7 +2020,7 @@ shape_loop:
     cmp ax, 3
     jb  top_row
     sub ax, 3
-    mov dx, y_positions[2]  ; byte offset 2 = word index 1 (second y position = 92)
+    mov dx, y_positions + 2
     jmp shape_pos_ready
 top_row:
     mov dx, y_positions[0]
@@ -2117,7 +2069,7 @@ start:
     mov ax, @data
     mov ds, ax
 
-    call init_files
+    call init_scoreboard
     call login_screen
 
     call show_menu
@@ -2132,11 +2084,10 @@ restart_game:
 
 game_loop:
     call gen_shapes
-    call shuffle_shape_colors
 
     call set_video_mode
     call cls
-    call draw_game_background
+    call draw_menu_background
 
     ; --- Title (row 0) ---
     mov  dh, 01h
@@ -2162,8 +2113,6 @@ game_loop:
     call setcur
     mov  dx, offset m3
     call print
-    mov  dx, offset inp_prompt
-    call print
     call input_digit_timed
     jnc  circle_ok
     jmp  round_timeout
@@ -2182,8 +2131,6 @@ n1:
     call setcur
     mov  dx, offset m4
     call print
-    mov  dx, offset inp_prompt
-    call print
     call input_digit_timed
     jnc  square_ok
     jmp  round_timeout
@@ -2201,8 +2148,6 @@ n2:
     mov  dl, 03h
     call setcur
     mov  dx, offset m5
-    call print
-    mov  dx, offset inp_prompt
     call print
     call input_digit_timed
     jnc  triangle_ok
