@@ -11,7 +11,11 @@ m5          db "TRIANGLE >", "$"
 deadmsg     db "YOU DIED", "$"
 statsmsg    db "ROUND CLEAR", "$"
 time_label  db "TIME ", "$"
-wall_fail_msg db "COPY WALL BMP NEXT TO EXE", "$"
+wall_fail_msg db "ERROR PUT THE BITMAP TO IMAGE DIRECTORY", "$"
+menu_start  db "START", "$"
+menu_quit   db "QUIT", "$"
+menu_retry  db "PLAY AGAIN?", "$"
+retry_yes   db "YES", "$"
 
 ; ===== Scoreboard =====
 scb2 db "SCORE ", "$"
@@ -37,13 +41,9 @@ shape_list  db 6 dup(0)
 
 ; ===== BIT MAPS ======
 wallpaper_name db "./image/wall.bmp", 0
+login_bg       db "./image/login.bmp", 0
 
 ; ===== Menu strings =====
-menu_title  db "SHAPE GAME ARENA", "$"
-menu_start  db "START", "$"
-menu_quit   db "QUIT", "$"
-menu_retry  db "PLAY AGAIN?", "$"
-retry_yes   db "YES", "$"
 x_positions dw 34, 124, 214
 y_positions dw 46, 92
 wallpaper_handle dw 0
@@ -98,14 +98,12 @@ scoreboard_file db "scrboard.txt",0
 
 bytes_read dw ?
 
-
 current_user db 11 dup(0)
 user_exists db 0
 
 ; [0] = max chars (10)
 ; [1] = chars entered
 ; [2...] = text (null terminated)
-
 input_buffer db 10
              db 0
              db 10 dup(0)
@@ -156,6 +154,10 @@ login_screen proc
     call set_video_mode
     call cls
 
+    mov dx, offset login_bg
+    call draw_bitmap
+    jc  login_bitmap_fail
+
     ; TITLE
     mov dh, 8
     mov dl, 10
@@ -169,6 +171,32 @@ login_screen proc
     call setcur
     mov dx, offset limit_text
     call print
+
+    jmp login_proceed
+
+login_bitmap_fail:
+    ; Fallback: try to show error or proceed anyway
+    mov dh, 1
+    mov dl, 0
+    call setcur
+    mov dx, offset wall_fail_msg
+    call print
+
+    ; TITLE
+    mov dh, 8
+    mov dl, 10
+    call setcur
+    mov dx, offset title_text
+    call print
+
+    ; LIMIT TEXT
+    mov dh, 10
+    mov dl, 13
+    call setcur
+    mov dx, offset limit_text
+    call print
+
+login_proceed:
 
     ; INPUT FIELD - position cursor and read
     mov dh, 12
@@ -228,7 +256,7 @@ login_screen endp
 ; READ USERNAME  (graphics mode)
 ; Reads up to 10 printable chars via BIOS
 ; int 16h, echoes each with draw_ui_char
-; Backspace erases last char
+; Backspace erases last char -- there's a bug where the character remains but it does overwrite
 ; Enter confirms
 ; Result stored in input_buffer
 ; ==========================================
@@ -663,6 +691,7 @@ draw_timer proc
     mov  al, time_left
     call print_num
     
+    ; ===== BUGGED ==========
     ;REFRESH SCORE NUMBER ONLY
     mov  cx, 255
     mov  dx, 152
@@ -678,6 +707,7 @@ draw_timer proc
     mov  di, 8
     mov  al, 14h
     call fill_rect
+    ; ===== BUGGED ==========
 
     mov  dh, 13h        
     mov  dl, 1Ch        
@@ -843,7 +873,7 @@ stats_nowrap:
 show_round_stats endp
 
 ; ======================
-; long death beep
+; long death beep -- let's put the sounds here nothing for now
 ; ======================
 long_beep proc
     push ax
@@ -886,10 +916,12 @@ beep_nowrap:
 long_beep endp
 
 ; ======================
-; draw wallpaper.bmp in mode 13h
-; CF=1 on failure
+; draw_bitmap - draws any 8-bit 320x200 BMP to screen
+; Input - DX = offset to null-terminated bitmap filename string
+; Output - CF=1 on failure, CF=0 on success
+; Modifies - all general purpose registers (AX, BX, CX, DX)
 ; ======================
-draw_wallpaper proc
+draw_bitmap proc
     push ax
     push bx
     push cx
@@ -901,81 +933,98 @@ draw_wallpaper proc
 
     mov wallpaper_handle, 0
 
+    ; ==== Open file ====
     mov ah, 3Dh
     mov al, 00h
-    mov dx, offset wallpaper_name
     int 21h
-    jnc wallpaper_open_ok
-    jmp wallpaper_fail
-wallpaper_open_ok:
+    jnc bitmap_open_ok
+    jmp bitmap_fail
 
+bitmap_open_ok:
     mov wallpaper_handle, ax
     mov bx, ax
 
+    ; ==== Read BMP header (54 bytes) ====
     mov ah, 3Fh
     mov cx, 54
     mov dx, offset bmp_header
     int 21h
-    jnc wallpaper_read_ok
-    jmp wallpaper_fail_close
-wallpaper_read_ok:
+    jnc bitmap_header_read_ok
+    jmp bitmap_fail_close
+
+bitmap_header_read_ok:
     cmp ax, 54
-    je  wallpaper_size_ok
-    jmp wallpaper_fail_close
-wallpaper_size_ok:
+    je  bitmap_validate_sig
+    jmp bitmap_fail_close
 
+    ; ==== Validate BMP signature ====
+bitmap_validate_sig:
     cmp word ptr bmp_header, 4D42h
-    je  wallpaper_sig_ok
-    jmp wallpaper_fail_close
-wallpaper_sig_ok:
-    cmp word ptr bmp_header+18, 320
-    je  wallpaper_w_ok
-    jmp wallpaper_fail_close
-wallpaper_w_ok:
-    cmp word ptr bmp_header+20, 0
-    je  wallpaper_w_hi_ok
-    jmp wallpaper_fail_close
-wallpaper_w_hi_ok:
-    cmp word ptr bmp_header+22, 200
-    je  wallpaper_h_ok
-    jmp wallpaper_fail_close
-wallpaper_h_ok:
-    cmp word ptr bmp_header+24, 0
-    je  wallpaper_h_hi_ok
-    jmp wallpaper_fail_close
-wallpaper_h_hi_ok:
-    cmp word ptr bmp_header+28, 8
-    je  wallpaper_bpp_ok
-    jmp wallpaper_fail_close
-wallpaper_bpp_ok:
+    je  bitmap_validate_width
+    jmp bitmap_fail_close
 
+    ; ==== Validate width = 320 ====
+bitmap_validate_width:
+    cmp word ptr bmp_header+18, 320
+    je  bitmap_validate_width_hi
+    jmp bitmap_fail_close
+
+bitmap_validate_width_hi:
+    cmp word ptr bmp_header+20, 0
+    je  bitmap_validate_height
+    jmp bitmap_fail_close
+
+    ; ==== Validate height = 200 ====
+bitmap_validate_height:
+    cmp word ptr bmp_header+22, 200
+    je  bitmap_validate_height_hi
+    jmp bitmap_fail_close
+
+bitmap_validate_height_hi:
+    cmp word ptr bmp_header+24, 0
+    je  bitmap_validate_bpp
+    jmp bitmap_fail_close
+
+    ; ==== Validate bits per pixel = 8 ====
+bitmap_validate_bpp:
+    cmp word ptr bmp_header+28, 8
+    je  bitmap_validate_palette_offset
+    jmp bitmap_fail_close
+
+    ; ==== Validate palette offset and size ====
+bitmap_validate_palette_offset:
     mov si, word ptr bmp_header+10
     cmp si, 54
-    jae wallpaper_offset_ok
-    jmp wallpaper_fail_close
-wallpaper_offset_ok:
+    jae bitmap_calc_palette_size
+    jmp bitmap_fail_close
+
+bitmap_calc_palette_size:
     sub si, 54
     cmp si, 0
-    jne wallpaper_palette_nonzero
-    jmp wallpaper_fail_close
-wallpaper_palette_nonzero:
-    cmp si, 1024
-    jbe wallpaper_palette_ok
-    jmp wallpaper_fail_close
-wallpaper_palette_ok:
+    jne bitmap_palette_size_ok
+    jmp bitmap_fail_close
 
+bitmap_palette_size_ok:
+    cmp si, 1024
+    jbe bitmap_read_palette
+    jmp bitmap_fail_close
+
+    ; ==== Read palette from file ====
+bitmap_read_palette:
     mov ah, 3Fh
     mov cx, si
     mov dx, offset bmp_palette
     int 21h
-    jnc wallpaper_palette_read_ok
-    jmp wallpaper_fail_close
-wallpaper_palette_read_ok:
-    cmp ax, si
-    je  palette_ready
-    jmp wallpaper_fail_close
+    jnc bitmap_palette_read_ok
+    jmp bitmap_fail_close
 
-palette_ready:
+bitmap_palette_read_ok:
+    cmp ax, si
+    je  bitmap_load_palette
+    jmp bitmap_fail_close
+
+    ; ==== Load palette to VGA DAC ====
+bitmap_load_palette:
     mov dx, 03C8h
     xor al, al
     out dx, al
@@ -986,18 +1035,20 @@ palette_ready:
     shr bp, 1
     mov cx, word ptr bmp_header+46
     cmp cx, 0
-    jne palette_count_ok
+    jne bitmap_palette_count_ok
     mov cx, bp
-palette_count_ok:
+
+bitmap_palette_count_ok:
     cmp cx, bp
-    jbe palette_count_clamped
+    jbe bitmap_palette_count_clamped
     mov cx, bp
-palette_count_clamped:
+
+bitmap_palette_count_clamped:
     mov si, offset bmp_palette
 
-palette_loop:
+bitmap_palette_transfer:
     cmp cx, 0
-    je  palette_done
+    je  bitmap_palette_done
     mov al, [si+2]
     shr al, 1
     shr al, 1
@@ -1012,131 +1063,10 @@ palette_loop:
     out dx, al
     add si, 4
     dec cx
-    jmp palette_loop
+    jmp bitmap_palette_transfer
 
-palette_done:
-    ; ---- Restore standard CGA palette for indices 0-15 ----
-    mov  dx, 03C8h
-    xor  al, al
-    out  dx, al
-    inc  dx
-
-    ; 0: Black
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 1: Dark Blue
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 2: Dark Green
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 3: Dark Cyan
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 4: Dark Red
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 5: Dark Magenta
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 6: Brown
-    mov al, 2Ah
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 7: Light Grey
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 8: Dark Grey
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 9: Bright Blue
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 10: Bright Green
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 11: Bright Cyan
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 12: Bright Red
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 13: Bright Magenta
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 14: Yellow
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 15: White
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; ---- End palette restore ----
-
-    ; ---- Custom game colors (indices 16-20) ----
-    ; Index 16 (10h): Pink border  #F472A0 -> R=3Dh G=1Ch B=28h
+bitmap_palette_done:
+    ; ==== Apply custom game colors (indices 16-20) ====
     mov dx, 03C8h
     mov al, 10h
     out dx, al
@@ -1175,22 +1105,22 @@ palette_done:
     out dx, al
     mov al, 37h
     out dx, al
-    ; ---- End custom colors ----
 
+    ; ==== Draw bitmap data to video memory ====
     mov ax, 0A000h
     mov es, ax
     mov di, 63680
     mov bp, 200
     mov bx, wallpaper_handle
 
-row_loop:
+bitmap_row_loop:
     mov ah, 3Fh
     mov cx, 320
     mov dx, offset bmp_row_buffer
     int 21h
-    jc  wallpaper_fail_close
+    jc  bitmap_fail_close
     cmp ax, 320
-    jne wallpaper_fail_close
+    jne bitmap_fail_close
 
     mov si, offset bmp_row_buffer
     mov cx, 320
@@ -1198,27 +1128,28 @@ row_loop:
     rep movsb
     sub di, 640
     dec bp
-    jnz row_loop
+    jnz bitmap_row_loop
 
+    ; ==== Close file and return success ====
     mov bx, wallpaper_handle
     mov ah, 3Eh
     int 21h
     mov wallpaper_handle, 0
     clc
-    jmp wallpaper_done
+    jmp bitmap_done
 
-wallpaper_fail_close:
+bitmap_fail_close:
     mov bx, wallpaper_handle
     cmp bx, 0
-    je  wallpaper_fail
+    je  bitmap_fail
     mov ah, 3Eh
     int 21h
     mov wallpaper_handle, 0
 
-wallpaper_fail:
+bitmap_fail:
     stc
 
-wallpaper_done:
+bitmap_done:
     pop es
     pop bp
     pop di
@@ -1227,6 +1158,17 @@ wallpaper_done:
     pop cx
     pop bx
     pop ax
+    ret
+draw_bitmap endp
+
+; ======================
+; draw_wallpaper - wrapper for draw_bitmap with default wallpaper
+; ======================
+draw_wallpaper proc
+    push dx
+    mov dx, offset wallpaper_name
+    call draw_bitmap
+    pop dx
     ret
 draw_wallpaper endp
 
@@ -1822,7 +1764,7 @@ show_menu proc
     mov dh, 05h
     mov dl, 0Ch
     call setcur
-    mov dx, offset menu_title
+    mov dx, offset game_title
     call print
 
     mov dh, 0Dh
