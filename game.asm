@@ -10,12 +10,18 @@ m4          db "SQUARE >", "$"
 m5          db "TRIANGLE >", "$"
 deadmsg     db "YOU DIED", "$"
 statsmsg    db "ROUND CLEAR", "$"
-time_label  db "TIME ", "$"
-wall_fail_msg db "COPY WALL BMP NEXT TO EXE", "$"
+time_label  db "TIME: ", "$"
+wall_fail_msg db "ERROR PUT THE BITMAP TO IMAGE DIRECTORY", "$"
+menu_start  db "START", "$"
+menu_quit   db "QUIT", "$"
+menu_retry  db "PLAY AGAIN?", "$"
+retry_yes   db "YES", "$"
 
 ; ===== Scoreboard =====
-scb2 db "SCORE ", "$"
-scb3 db "MISTAKES ", "$"
+scb2  db "SCR > ", "$"
+scb3  db "MIS > ", "$"
+score_text db "SCORE: ", "$"
+mistake db "MISTAKES: ", "$"
 
 ; ===== Values =====
 correctC    db ?
@@ -23,27 +29,29 @@ correctS    db ?
 correctT    db ?
 totalShapes db ?
 
-score       db 0
+score       dw 0
 mistakes    db 0
 circle_color db 11h
 square_color db 12h
 triangle_color db 13h
 round_start_cs dw 0
 round_elapsed_cs dw 0
-time_left db 5
+current_time_limit dw ?
+current_max_seconds db ?
+current_time_left  db ?
 
 ; Array to hold up to 6 shapes (0=empty, 1=Circle, 2=Square, 3=Triangle)
 shape_list  db 6 dup(0)
 
 ; ===== BIT MAPS ======
 wallpaper_name db "./image/wall.bmp", 0
+login_bg       db "./image/login.bmp", 0
+difficulty_bg  db "./image/diff.bmp", 0 
+home_bg        db "./image/home.bmp", 0 
+game_bg        db "./image/game.bmp", 0
+default_bg     db "./image/default.bmp", 0
 
 ; ===== Menu strings =====
-menu_title  db "SHAPE GAME ARENA", "$"
-menu_start  db "START", "$"
-menu_quit   db "QUIT", "$"
-menu_retry  db "PLAY AGAIN?", "$"
-retry_yes   db "YES", "$"
 x_positions dw 34, 124, 214
 y_positions dw 46, 92
 wallpaper_handle dw 0
@@ -98,21 +106,19 @@ scoreboard_file db "scrboard.txt",0
 
 bytes_read dw ?
 
-
-current_user db 11 dup(0)
+current_user db 11 dup(0), '$'
 user_exists db 0
 
 ; [0] = max chars (10)
 ; [1] = chars entered
 ; [2...] = text (null terminated)
-
 input_buffer db 10
              db 0
              db 10 dup(0)
 
 file_buffer db 1024 dup(0)
 
-title_text db "INSERT YOUR NAME:", "$"
+enter_text db "PRESS ENTER", "$"
 limit_text db "10 CHARS MAX.", "$"
 welcome_text db "WELCOME ", "$"
 
@@ -151,28 +157,34 @@ init_scoreboard endp
 ; LOGIN SCREEN
 ; ==========================================
 
-login_screen proc
+show_login_screen proc
 
     call set_video_mode
     call cls
 
+    mov dx, offset login_bg
+    call draw_bitmap
+
     ; TITLE
-    mov dh, 8
-    mov dl, 10
+    mov dh, 19
+    mov dl, 14
     call setcur
-    mov dx, offset title_text
+    mov dx, offset enter_text
     call print
 
     ; LIMIT TEXT
     mov dh, 10
-    mov dl, 13
+    mov dl, 14
     call setcur
     mov dx, offset limit_text
     call print
 
+    jmp login_proceed
+
+login_proceed:
     ; INPUT FIELD - position cursor and read
-    mov dh, 12
-    mov dl, 14
+    mov dh, 14
+    mov dl, 13
     call setcur
 
     call read_username
@@ -187,9 +199,11 @@ login_screen proc
     call append_new_user
 
 login_done:
-
     call set_video_mode
     call cls
+    
+    mov dx, offset default_bg
+    call draw_bitmap
 
     mov dh, 12
     mov dl, 13
@@ -221,11 +235,10 @@ login_pause_nowrap:
     jb  login_pause
 
     ret
-
-login_screen endp
+show_login_screen endp
 
 ; ==========================================
-; READ USERNAME  (graphics mode)
+; READ USERNAME
 ; Reads up to 10 printable chars via BIOS
 ; int 16h, echoes each with draw_ui_char
 ; Backspace erases last char
@@ -254,10 +267,14 @@ ru_key_loop:
     int 16h                     ; wait for keypress -> AL=char, AH=scan
 
     cmp al, 0Dh                 ; Enter
-    je  ru_done
+    jne skip_ru_done
+    jmp ru_done
+skip_ru_done:
 
-    cmp al, 08h                 ; Backspace
-    je  ru_backspace
+    cmp al, 08h                 
+    jne skip_ru_backspace
+    jmp ru_backspace
+skip_ru_backspace:
 
     ; only accept A-Z, a-z, 0-9
     cmp al, '0'
@@ -312,11 +329,25 @@ ru_backspace:
     add si, bx
     mov byte ptr [si], 0
 
-    ; erase pixel glyph: move cursor back one col, draw space
+    ; erase pixel glyph: move cursor back one col, fill rect to clear
     dec ui_col
-    mov al, ' '
-    call draw_ui_char
-    dec ui_col                  ; draw_ui_char advances col, step back again
+    
+    ; Calculate pixel position from ui_col and ui_row
+    xor ax, ax
+    mov al, ui_col
+    shl ax, 3
+    mov cx, ax      ; CX = pixel column
+    
+    xor ax, ax
+    mov al, ui_row
+    shl ax, 3
+    mov dx, ax      ; DX = pixel row
+    
+    mov si, 8       ; width = 8 pixels
+    mov di, 8       ; height = 8 pixels
+    mov al, 14h     ; cream background color
+    call fill_rect
+    
     jmp ru_key_loop
 
 ru_done:
@@ -453,7 +484,7 @@ check_user_exists endp
 
 ; ==========================================
 ; FORMAT:
-; username,0
+; username, score
 ; ==========================================
 append_new_user proc
 
@@ -517,19 +548,17 @@ append_new_user endp
 ; DL = char
 ; ==========================================
 write_char proc
-
-    mov ah,40h
-    mov cx,1
+    mov ah, 40h
+    mov cx, 1
 
     push dx
-    mov dx,sp
+    mov dx, sp
 
     int 21h
 
     pop dx
 
     ret
-
 write_char endp
 
 ; ======================
@@ -556,25 +585,66 @@ print_done:
 print endp
 
 ; ======================
-; print number in AL
+; print number in AX (0-65535)
 ; ======================
 print_num proc
     push ax
+    push bx
+    push cx
     push dx
-    aam
-    add ax, 3030h
-    push ax
-    cmp ah, '0'
-    je skip_tens
-    mov al, ah
+    push di
+    
+    mov bx, 10          ; divisor
+    xor cx, cx          ; digit count
+    xor di, di          ; leading zero flag
+    
+    ; Special case for 0
+    cmp ax, 0
+    jne not_zero_pn
+    mov al, '0'
     call draw_ui_char
-skip_tens:
+    jmp done_print_num
+    
+not_zero_pn:
+    ; Extract and push digits onto stack
+digit_push_loop:
+    xor dx, dx
+    div bx              ; AX / 10 -> AX=quotient, DX=remainder
+    push dx             ; Push digit (0-9)
+    inc cx              ; Count digits
+    cmp ax, 0
+    jne digit_push_loop
+    
+    ; Pop and print digits (from stack = most significant first)
+digit_pop_loop:
     pop ax
+    add al, '0'
     call draw_ui_char
+    dec cx
+    cmp cx, 0
+    jne digit_pop_loop
+    
+done_print_num:
+    pop di
     pop dx
+    pop cx
+    pop bx
     pop ax
     ret
 print_num endp
+
+; ===========================
+;   SCOREBOARD screen
+; ===========================
+show_scoreboard proc 
+    call set_video_mode
+    call cls
+
+    mov dx, offset default_bg
+    call draw_bitmap
+    
+    
+show_scoreboard endp
 
 ; ======================
 ; random number 0-5 (result in AL)
@@ -648,49 +718,42 @@ draw_timer proc
 
     ; Erase old timer digit
     mov  cx, 255  ; column
-    mov  dx, 16   ; rows
-    mov  si, 48   ; right
-    mov  di, 8    ; bottom
-    mov  al, 14h
+    mov  dx, 24   ; rows
+    mov  si, 30   ; width
+    mov  di, 8    ; height
+    mov  al, 14h  ; color
     call fill_rect
 
     ; Draw timer
-    mov  dh, 02h
+    mov  dh, 03h
     mov  dl, 1Ch
     call setcur
     mov  dx, offset time_label
     call print
-    mov  al, time_left
+    mov  al, current_time_left
+    xor  ah, ah         ; Clear AH to zero-extend AL for print_num
+    call print_num
+
+    ;REFRESH SCORE AND MISTAKES VALUE
+    mov  cx, 255
+    mov  dx, 160
+    mov  si, 30          
+    mov  di, 16
+    mov  al, 14h
+    call fill_rect
+
+    mov  dh, 14h        
+    mov  dl, 1Bh        
+    call setcur
+    mov  dx, offset scb2 ; SCORE
+    call print
+    mov  ax, score
     call print_num
     
-    ;REFRESH SCORE NUMBER ONLY
-    mov  cx, 255
-    mov  dx, 152
-    mov  si, 8          
-    mov  di, 8
-    mov  al, 14h
-    call fill_rect
-
-    ;REFRESH MISTAKES NUMBER ONLY  
-    mov  cx, 255
-    mov  dx, 168
-    mov  si, 8          
-    mov  di, 8
-    mov  al, 14h
-    call fill_rect
-
-    mov  dh, 13h        
-    mov  dl, 1Ch        
-    call setcur
-    mov  dx, offset scb2
-    call print
-    mov  al, score
-    call print_num
-
     mov  dh, 15h        
-    mov  dl, 19h        
+    mov  dl, 1Bh        
     call setcur
-    mov  dx, offset scb3
+    mov  dx, offset scb3 ; MISTAKES
     call print
     mov  al, mistakes
     call print_num
@@ -710,14 +773,20 @@ draw_timer proc
 draw_timer endp
 
 ; ======================
-; start 5-second round timer
+; Round Timer is now dynamic based on difficulty
+; , but now we need to initialize it at the start of each round
 ; ======================
 start_round_timer proc
     call get_time_cs
+
     mov round_start_cs, ax
     mov round_elapsed_cs, 0
-    mov time_left, 5
+
+    mov al, current_max_seconds
+    mov current_time_left, al
+
     call draw_timer
+
     ret
 start_round_timer endp
 
@@ -726,62 +795,149 @@ start_round_timer endp
 ; CF=1 if timer expired
 ; ======================
 check_round_timer proc
+    push ax
     push bx
     push dx
 
     call update_round_elapsed
-    cmp ax, 500
+
+    ; AX = elapsed ticks
+    cmp ax, current_time_limit
     jae timer_expired
 
+    ; elapsed / 100
     xor dx, dx
     mov bx, 100
     div bx
-    mov bl, 5
+
+    ; remaining = max_seconds - elapsed_seconds
+    mov bl, current_max_seconds
     sub bl, al
-    mov time_left, bl
+
+    mov current_time_left, bl
+
     call draw_timer
+
     clc
     jmp timer_done
 
 timer_expired:
-    mov time_left, 0
+    mov current_time_left, 0
     call draw_timer
     stc
 
 timer_done:
     pop dx
     pop bx
+    pop ax
     ret
 check_round_timer endp
+
+set_easy_timer proc
+    mov current_time_limit, 1000
+    mov current_max_seconds, 10
+    ret
+set_easy_timer endp
+
+set_medium_timer proc
+    mov current_time_limit, 500
+    mov current_max_seconds, 5
+    ret
+set_medium_timer endp
+
+set_hard_timer proc
+    mov current_time_limit, 300
+    mov current_max_seconds, 3
+    ret
+set_hard_timer endp
 
 ; ======================
 ; timed single-digit input
 ; result AL=digit, CF=0 on success
 ; CF=1 on timeout
+; Supports backspace to delete and re-input
+; Requires Enter to confirm digit
 ; ======================
 input_digit_timed proc
-timed_wait:
+digit_input_loop:
     call check_round_timer
     jc  timed_out
 
     mov ah, 01h
     int 16h
-    jz  timed_wait
+    jz  digit_input_loop
 
     mov ah, 00h
     int 16h
-    cmp al, '0'
-    jb  timed_wait
-    cmp al, '9'
-    ja  timed_wait
 
+    ; Ignore Enter and Backspace at digit input phase
+    cmp al, 0Dh
+    je  digit_input_loop
+    cmp al, 08h
+    je  digit_input_loop
+
+    ; Check if it's a digit
+    cmp al, '0'
+    jb  digit_input_loop
+    cmp al, '9'
+    ja  digit_input_loop
+
+    ; Draw the digit
     push ax
     call draw_ui_char
     pop ax
 
+    ; Store digit in BL
+    mov bl, al
+
+    ; Wait for Enter to confirm or Backspace to retry
+confirm_or_retry:
+    ; IMPORTANT: check_round_timer is necessary otherwise it freezes the game well stuck in a loop to be precise
+    call check_round_timer
+    jc  timed_out
+
+    mov ah, 01h
+    int 16h
+    jz  confirm_or_retry
+
+    mov ah, 00h
+    int 16h
+
+    cmp al, 0Dh
+    je  digit_confirmed
+    cmp al, 08h
+    je  digit_retry
+
+    ; Any other key = ignore
+    jmp confirm_or_retry
+
+digit_confirmed:
+    mov al, bl
     sub al, '0'
     clc
     ret
+
+digit_retry:
+    ; Clear the digit from screen
+    dec ui_col
+
+    ; Calculate pixel position from ui_col and ui_row
+    xor ax, ax
+    mov al, ui_col
+    shl ax, 3
+    mov cx, ax      ; CX = pixel column
+
+    xor ax, ax
+    mov al, ui_row
+    shl ax, 3
+    mov dx, ax      ; DX = pixel row
+
+    mov si, 8       
+    mov di, 8       
+    mov al, 14h     
+    call fill_rect
+
+    jmp digit_input_loop
 
 timed_out:
     stc
@@ -789,7 +945,8 @@ timed_out:
 input_digit_timed endp
 
 ; ======================
-; show inter-round stats for one second
+; show inter-round stats
+; Waits for Enter key to proceed
 ; ======================
 show_round_stats proc
     push ax
@@ -797,44 +954,47 @@ show_round_stats proc
     push bx
 
     call cls
-    call draw_menu_background
+    mov ax, offset default_bg
+    call draw_bitmap
 
-    ; ROUND CLEAR ? centered in black box
+    ; ROUND CLEAR
     mov  dh, 05h
     mov  dl, 0Eh
     call setcur
-    mov  dx, offset statsmsg      ; "ROUND CLEAR"
+    mov  dx, offset statsmsg      
     call print
 
-    ; SCORE N ? centered in red box
-    mov  dh, 0Dh
-    mov  dl, 10h
-    call setcur
-    mov  dx, offset scb2          ; "SCORE "
-    call print
-    mov  al, score
-    call print_num
-
-    ; MISTAKES N ? centered in blue box
-    mov  dh, 11h
+    ; Pres Enter to continue
+    mov  dh, 14h
     mov  dl, 0Eh
     call setcur
-    mov  dx, offset scb3          ; "MISTAKES "
+    mov  dx, offset enter_text      
+    call print
+
+    ; SCORE N 
+    mov  dh, 0Bh
+    mov  dl, 10h
+    call setcur
+    mov  dx, offset score_text          
+    call print
+    mov  ax, score
+    call print_num
+
+    ; MISTAKES N 
+    mov  dh, 0Eh
+    mov  dl, 0Eh
+    call setcur
+    mov  dx, offset mistake         
     call print
     mov  al, mistakes
     call print_num
 
-    call get_time_cs
-    mov  bx, ax
+    ; Wait for Enter key to proceed
 stats_wait:
-    call get_time_cs
-    cmp  ax, bx
-    jae  stats_nowrap
-    add  ax, 6000
-stats_nowrap:
-    sub  ax, bx
-    cmp  ax, 100
-    jb   stats_wait
+    mov ah, 00h
+    int 16h
+    cmp al, 0Dh                 ; Enter key
+    jne stats_wait
 
     pop  bx
     pop  dx
@@ -843,7 +1003,7 @@ stats_nowrap:
 show_round_stats endp
 
 ; ======================
-; long death beep
+; long death beep -- let's put the sounds here nothing for now
 ; ======================
 long_beep proc
     push ax
@@ -886,10 +1046,12 @@ beep_nowrap:
 long_beep endp
 
 ; ======================
-; draw wallpaper.bmp in mode 13h
-; CF=1 on failure
+; draw_bitmap - draws any 8-bit 320x200 BMP to screen
+; Input - DX = offset to null-terminated bitmap filename string
+; Output - CF=1 on failure, CF=0 on success
+; Modifies - all general purpose registers (AX, BX, CX, DX)
 ; ======================
-draw_wallpaper proc
+draw_bitmap proc
     push ax
     push bx
     push cx
@@ -901,81 +1063,98 @@ draw_wallpaper proc
 
     mov wallpaper_handle, 0
 
+    ; ==== Open file ====
     mov ah, 3Dh
     mov al, 00h
-    mov dx, offset wallpaper_name
     int 21h
-    jnc wallpaper_open_ok
-    jmp wallpaper_fail
-wallpaper_open_ok:
+    jnc bitmap_open_ok
+    jmp bitmap_fail
 
+bitmap_open_ok:
     mov wallpaper_handle, ax
     mov bx, ax
 
+    ; ==== Read BMP header (54 bytes) ====
     mov ah, 3Fh
     mov cx, 54
     mov dx, offset bmp_header
     int 21h
-    jnc wallpaper_read_ok
-    jmp wallpaper_fail_close
-wallpaper_read_ok:
+    jnc bitmap_header_read_ok
+    jmp bitmap_fail_close
+
+bitmap_header_read_ok:
     cmp ax, 54
-    je  wallpaper_size_ok
-    jmp wallpaper_fail_close
-wallpaper_size_ok:
+    je  bitmap_validate_sig
+    jmp bitmap_fail_close
 
+    ; ==== Validate BMP signature ====
+bitmap_validate_sig:
     cmp word ptr bmp_header, 4D42h
-    je  wallpaper_sig_ok
-    jmp wallpaper_fail_close
-wallpaper_sig_ok:
-    cmp word ptr bmp_header+18, 320
-    je  wallpaper_w_ok
-    jmp wallpaper_fail_close
-wallpaper_w_ok:
-    cmp word ptr bmp_header+20, 0
-    je  wallpaper_w_hi_ok
-    jmp wallpaper_fail_close
-wallpaper_w_hi_ok:
-    cmp word ptr bmp_header+22, 200
-    je  wallpaper_h_ok
-    jmp wallpaper_fail_close
-wallpaper_h_ok:
-    cmp word ptr bmp_header+24, 0
-    je  wallpaper_h_hi_ok
-    jmp wallpaper_fail_close
-wallpaper_h_hi_ok:
-    cmp word ptr bmp_header+28, 8
-    je  wallpaper_bpp_ok
-    jmp wallpaper_fail_close
-wallpaper_bpp_ok:
+    je  bitmap_validate_width
+    jmp bitmap_fail_close
 
+    ; ==== Validate width = 320 ====
+bitmap_validate_width:
+    cmp word ptr bmp_header+18, 320
+    je  bitmap_validate_width_hi
+    jmp bitmap_fail_close
+
+bitmap_validate_width_hi:
+    cmp word ptr bmp_header+20, 0
+    je  bitmap_validate_height
+    jmp bitmap_fail_close
+
+    ; ==== Validate height = 200 ====
+bitmap_validate_height:
+    cmp word ptr bmp_header+22, 200
+    je  bitmap_validate_height_hi
+    jmp bitmap_fail_close
+
+bitmap_validate_height_hi:
+    cmp word ptr bmp_header+24, 0
+    je  bitmap_validate_bpp
+    jmp bitmap_fail_close
+
+    ; ==== Validate bits per pixel = 8 ====
+bitmap_validate_bpp:
+    cmp word ptr bmp_header+28, 8
+    je  bitmap_validate_palette_offset
+    jmp bitmap_fail_close
+
+    ; ==== Validate palette offset and size ====
+bitmap_validate_palette_offset:
     mov si, word ptr bmp_header+10
     cmp si, 54
-    jae wallpaper_offset_ok
-    jmp wallpaper_fail_close
-wallpaper_offset_ok:
+    jae bitmap_calc_palette_size
+    jmp bitmap_fail_close
+
+bitmap_calc_palette_size:
     sub si, 54
     cmp si, 0
-    jne wallpaper_palette_nonzero
-    jmp wallpaper_fail_close
-wallpaper_palette_nonzero:
-    cmp si, 1024
-    jbe wallpaper_palette_ok
-    jmp wallpaper_fail_close
-wallpaper_palette_ok:
+    jne bitmap_palette_size_ok
+    jmp bitmap_fail_close
 
+bitmap_palette_size_ok:
+    cmp si, 1024
+    jbe bitmap_read_palette
+    jmp bitmap_fail_close
+
+    ; ==== Read palette from file ====
+bitmap_read_palette:
     mov ah, 3Fh
     mov cx, si
     mov dx, offset bmp_palette
     int 21h
-    jnc wallpaper_palette_read_ok
-    jmp wallpaper_fail_close
-wallpaper_palette_read_ok:
-    cmp ax, si
-    je  palette_ready
-    jmp wallpaper_fail_close
+    jnc bitmap_palette_read_ok
+    jmp bitmap_fail_close
 
-palette_ready:
+bitmap_palette_read_ok:
+    cmp ax, si
+    je  bitmap_load_palette
+    jmp bitmap_fail_close
+
+    ; ==== Load palette to VGA DAC ====
+bitmap_load_palette:
     mov dx, 03C8h
     xor al, al
     out dx, al
@@ -986,18 +1165,20 @@ palette_ready:
     shr bp, 1
     mov cx, word ptr bmp_header+46
     cmp cx, 0
-    jne palette_count_ok
+    jne bitmap_palette_count_ok
     mov cx, bp
-palette_count_ok:
+
+bitmap_palette_count_ok:
     cmp cx, bp
-    jbe palette_count_clamped
+    jbe bitmap_palette_count_clamped
     mov cx, bp
-palette_count_clamped:
+
+bitmap_palette_count_clamped:
     mov si, offset bmp_palette
 
-palette_loop:
+bitmap_palette_transfer:
     cmp cx, 0
-    je  palette_done
+    je  bitmap_palette_done
     mov al, [si+2]
     shr al, 1
     shr al, 1
@@ -1012,131 +1193,10 @@ palette_loop:
     out dx, al
     add si, 4
     dec cx
-    jmp palette_loop
+    jmp bitmap_palette_transfer
 
-palette_done:
-    ; ---- Restore standard CGA palette for indices 0-15 ----
-    mov  dx, 03C8h
-    xor  al, al
-    out  dx, al
-    inc  dx
-
-    ; 0: Black
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 1: Dark Blue
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 2: Dark Green
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 3: Dark Cyan
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 4: Dark Red
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 5: Dark Magenta
-    mov al, 2Ah
-    out dx, al
-    mov al, 00h
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 6: Brown
-    mov al, 2Ah
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 00h
-    out dx, al
-    ; 7: Light Grey
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    mov al, 2Ah
-    out dx, al
-    ; 8: Dark Grey
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 9: Bright Blue
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 10: Bright Green
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 11: Bright Cyan
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 12: Bright Red
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 13: Bright Magenta
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; 14: Yellow
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 15h
-    out dx, al
-    ; 15: White
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    mov al, 3Fh
-    out dx, al
-    ; ---- End palette restore ----
-
-    ; ---- Custom game colors (indices 16-20) ----
-    ; Index 16 (10h): Pink border  #F472A0 -> R=3Dh G=1Ch B=28h
+bitmap_palette_done:
+    ; ==== Apply custom game colors (indices 16-20) ====
     mov dx, 03C8h
     mov al, 10h
     out dx, al
@@ -1175,22 +1235,22 @@ palette_done:
     out dx, al
     mov al, 37h
     out dx, al
-    ; ---- End custom colors ----
 
+    ; ==== Draw bitmap data to video memory ====
     mov ax, 0A000h
     mov es, ax
     mov di, 63680
     mov bp, 200
     mov bx, wallpaper_handle
 
-row_loop:
+bitmap_row_loop:
     mov ah, 3Fh
     mov cx, 320
     mov dx, offset bmp_row_buffer
     int 21h
-    jc  wallpaper_fail_close
+    jc  bitmap_fail_close
     cmp ax, 320
-    jne wallpaper_fail_close
+    jne bitmap_fail_close
 
     mov si, offset bmp_row_buffer
     mov cx, 320
@@ -1198,27 +1258,28 @@ row_loop:
     rep movsb
     sub di, 640
     dec bp
-    jnz row_loop
+    jnz bitmap_row_loop
 
+    ; ==== Close file and return success ====
     mov bx, wallpaper_handle
     mov ah, 3Eh
     int 21h
     mov wallpaper_handle, 0
     clc
-    jmp wallpaper_done
+    jmp bitmap_done
 
-wallpaper_fail_close:
+bitmap_fail_close:
     mov bx, wallpaper_handle
     cmp bx, 0
-    je  wallpaper_fail
+    je  bitmap_fail
     mov ah, 3Eh
     int 21h
     mov wallpaper_handle, 0
 
-wallpaper_fail:
+bitmap_fail:
     stc
 
-wallpaper_done:
+bitmap_done:
     pop es
     pop bp
     pop di
@@ -1227,6 +1288,17 @@ wallpaper_done:
     pop cx
     pop bx
     pop ax
+    ret
+draw_bitmap endp
+
+; ======================
+; draw_wallpaper - wrapper for draw_bitmap with default wallpaper
+; ======================
+draw_wallpaper proc
+    push dx
+    mov dx, offset wallpaper_name
+    call draw_bitmap
+    pop dx
     ret
 draw_wallpaper endp
 
@@ -1780,35 +1852,6 @@ draw_panel proc
     ret
 draw_panel endp
 
-draw_menu_background proc
-    push ax
-    push cx
-    push dx
-    push si
-    push di
-
-    call draw_wallpaper
-    jc  menu_bg_fallback
-
-    jmp menu_bg_done
-
-menu_bg_fallback:
-
-    mov dh, 01h
-    mov dl, 03h
-    call setcur
-    mov dx, offset wall_fail_msg
-    call print
-
-menu_bg_done:
-    pop di
-    pop si
-    pop dx
-    pop cx
-    pop ax
-    ret
-draw_menu_background endp
-
 
 ; ======================
 ; show main menu
@@ -1817,24 +1860,15 @@ draw_menu_background endp
 show_menu proc
     call set_video_mode
     call cls
-    call draw_menu_background
 
-    mov dh, 05h
-    mov dl, 0Ch
+    mov dx , offset home_bg
+    call draw_bitmap
+    
+    ; for checking
+    mov dh, 01h
+    mov dl, 01h
     call setcur
-    mov dx, offset menu_title
-    call print
-
-    mov dh, 0Dh
-    mov dl, 11h
-    call setcur
-    mov dx, offset menu_start
-    call print
-
-    mov dh, 11h
-    mov dl, 11h
-    call setcur
-    mov dx, offset menu_quit
+    mov dx, offset current_user
     call print
 
 menu_wait:
@@ -1854,13 +1888,46 @@ menu_q:
 show_menu endp
 
 ; ======================
+; show difficulty selection menu
+; ======================
+show_difficulty_menu proc
+    call set_video_mode
+    call cls
+
+    mov dx, offset difficulty_bg
+    call draw_bitmap
+
+show_difficulty_menu_wait:
+    mov ah, 00h
+    int 16h
+    cmp al, '1'
+    je diff_easy
+    cmp al, '2'
+    je diff_medium
+    cmp al, '3'
+    je diff_hard
+    jmp show_difficulty_menu_wait
+diff_easy:
+    mov al, 1
+    ret
+diff_medium:
+    mov al, 2
+    ret
+diff_hard:
+    mov al, 3
+    ret
+show_difficulty_menu endp
+
+; ======================
 ; show retry menu
 ; returns AL=1 retry, AL=0 quit
 ; ======================
 show_retry proc
     call set_video_mode
     call cls
-    call draw_menu_background
+
+    mov dx, offset default_bg
+    call draw_bitmap
     call long_beep
 
     ; YOU DIED 
@@ -1874,15 +1941,15 @@ show_retry proc
     mov  dh, 07h
     mov  dl, 05h
     call setcur
-    mov  dx, offset scb2        ; "SCORE "
+    mov  dx, offset score_text        ; "SCORE "
     call print
-    mov  al, score
+    mov  ax, score
     call print_num
 
     mov  dh, 07h
     mov  dl, 18h
     call setcur
-    mov  dx, offset scb3        ; "MISTAKES "
+    mov  dx, offset mistake        ; "MISTAKES "
     call print
     mov  al, mistakes
     call print_num
@@ -1891,21 +1958,21 @@ show_retry proc
     mov  dh, 05h
     mov  dl, 0fh
     call setcur
-    mov  dx, offset menu_retry  ; "PLAY AGAIN"
+    mov  dx, offset menu_retry
     call print
 
-    ; 1 YES on red panel  
+    ; 1 YES
     mov  dh, 0Dh
     mov  dl, 12h
     call setcur
-    mov  dx, offset retry_yes   ; "1 YES"
+    mov  dx, offset retry_yes
     call print
 
-    ; 2 QUIT on blue panel 
+    ; 2 QUIT
     mov  dh, 11h
     mov  dl, 12h
     call setcur
-    mov  dx, offset menu_quit   ; "2 QUIT"
+    mov  dx, offset menu_quit
     call print
 
 retry_wait:
@@ -2070,42 +2137,56 @@ start:
     mov ds, ax
 
     call init_scoreboard
-    call login_screen
+    call show_login_screen
 
     call show_menu
     cmp  al, 0
     jne  skip1
     jmp  exit
 skip1:
+    call show_difficulty_menu
+    cmp al, 1
+    je  easy_mode
+    cmp al, 2
+    je  medium_mode
+    cmp al, 3
+    je  hard_mode
+
+easy_mode:
+    call set_easy_timer
+    jmp  restart_game
+medium_mode:
+    call set_medium_timer
+    jmp  restart_game
+hard_mode:
+    call set_hard_timer
+    jmp  restart_game
 
 restart_game:
     mov byte ptr score, 0
     mov byte ptr mistakes, 0
 
 game_loop:
+    call start_round_timer
+    
     call gen_shapes
 
     call set_video_mode
     call cls
-    call draw_menu_background
 
-    ; --- Title (row 0) ---
-    mov  dh, 01h
-    mov  dl, 0Ah
-    call setcur
-    mov  dx, offset game_title
-    call print
+    mov dx, offset game_bg
+    call draw_bitmap
 
     ; --- Subtitle (row 1) ---
     mov  dh, 03h
-    mov  dl, 08h
+    mov  dl, 07h
     call setcur
-    mov  dx, offset msg
+    mov  dx, offset msg ; COUNT THE SHAPES
     call print
 
     ; --- Draw shapes (rows 3-15) ---
     call draw_shapes
-    call start_round_timer
+    call check_round_timer
 
     ; Circles
     mov  dh, 13h
@@ -2117,7 +2198,7 @@ game_loop:
     jnc  circle_ok
     jmp  round_timeout
 circle_ok:
-    cmp  al, correctC         ; bl = correctC
+    cmp  al, correctC         
     jne  w1
     inc  score
     jmp  n1
@@ -2135,7 +2216,7 @@ n1:
     jnc  square_ok
     jmp  round_timeout
 square_ok:
-    cmp  al, correctS         ; bh = correctS
+    cmp  al, correctS         
     jne  w2
     inc  score
     jmp  n2
@@ -2153,7 +2234,7 @@ n2:
     jnc  triangle_ok
     jmp  round_timeout
 triangle_ok:
-    mov  cl, correctT   ; cl = correctT
+    mov  cl, correctT   
     cmp  al, cl
     jne  w3
     inc  score
