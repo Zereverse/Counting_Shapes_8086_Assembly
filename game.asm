@@ -21,6 +21,8 @@ retry_yes   db "YES", "$"
 scb2  db "SCR > ", "$"
 scb3  db "MIS > ", "$"
 score_text db "SCORE: ", "$"
+name_text  db "NAME: ", "$"
+diff_text  db "DIFFICULTY: ", "$"
 mistake db "MISTAKES: ", "$"
 
 ; ===== Values =====
@@ -31,6 +33,10 @@ totalShapes db ?
 
 score       dw 0
 mistakes    db 0
+difficulty    db 0 ; 1=easy, 2=medium, 3=hard
+diff1  db "EASY", 0
+diff2  db "MEDIUM", 0
+diff3  db "HARD", 0
 circle_color db 11h
 square_color db 12h
 triangle_color db 13h
@@ -117,6 +123,9 @@ input_buffer db 10
              db 10 dup(0)
 
 file_buffer db 1024 dup(0)
+write_buf   db 0        ; scratch byte for write_char (must be in DS)
+div10       dw 10       ; constant divisor for score conversion
+digit_count dw 0        ; digit counter for score conversion
 
 enter_text db "PRESS ENTER", "$"
 limit_text db "10 CHARS MAX.", "$"
@@ -126,29 +135,33 @@ welcome_text db "WELCOME ", "$"
 
 init_scoreboard proc
 
+    ; Try to open existing file (read-only)
     mov ah, 3Dh
     mov al, 0
     mov dx, offset scoreboard_file
     int 21h
-    jc create_file
+    jc  isb_create          ; file not found -> create it
 
-    ; close existing
+    ; File exists: close it and return
     mov bx, ax
     mov ah, 3Eh
     int 21h
     ret
 
-create_file:
-
+isb_create:
+    ; Create new empty file
     mov ah, 3Ch
-    mov cx, 0
+    mov cx, 0               ; normal attributes
     mov dx, offset scoreboard_file
     int 21h
+    jc  isb_done            ; creation failed (e.g. disk full) - just continue
 
+    ; Close the newly created file
     mov bx, ax
     mov ah, 3Eh
     int 21h
 
+isb_done:
     ret
 
 init_scoreboard endp
@@ -195,8 +208,6 @@ login_proceed:
 
     cmp user_exists, 1
     je login_done
-
-    call append_new_user
 
 login_done:
     call set_video_mode
@@ -483,81 +494,145 @@ done_check:
 check_user_exists endp
 
 ; ==========================================
-; FORMAT:
-; username, score
+; APPEND SCORE ENTRY TO SCOREBOARD FILE
+; Writes: current_user, difficulty, score\r\n
 ; ==========================================
-append_new_user proc
+append_score proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
 
-    ; open file write mode
-    mov ah,3Dh
-    mov al,1
-    mov dx,offset scoreboard_file
+    ; Open file for writing (mode 1 = write-only)
+    mov ah, 3Dh
+    mov al, 1
+    mov dx, offset scoreboard_file
+    int 21h
+    jnc append_score_opened
+    jmp append_score_done
+append_score_opened:
+
+    mov bx, ax              ; BX = file handle
+
+    ; Seek to end of file
+    mov ah, 42h
+    mov al, 2               ; from EOF
+    xor cx, cx
+    xor dx, dx
     int 21h
 
-    mov bx,ax
-
-    ; move to EOF
-    mov ah,42h
-    mov al,2
-    xor cx,cx
-    xor dx,dx
-    int 21h
-
-    ; write username
-    mov si,offset current_user
-
-write_name:
-
-    mov al,[si]
-
-    cmp al,0
-    je write_comma
-
-    mov ah,40h
-    mov cx,1
-    mov dx,si
-    int 21h
-
+    ; Write username chars (up to null terminator)
+    mov si, offset current_user
+as_name_loop:
+    mov dl, [si]
+    cmp dl, 0
+    je  as_write_comma1
+    call write_char
     inc si
-    jmp write_name
+    jmp as_name_loop
 
-write_comma:
-
-    mov dl,','
+as_write_comma1:
+    ; Write ", "
+    mov dl, ','
+    call write_char
+    mov dl, ' '
     call write_char
 
-    mov dl,'0'
+    ; Write difficulty as word (EASY / MEDIUM / HARD)
+    mov al, difficulty
+    cmp al, 1
+    je  as_diff_easy
+    cmp al, 2
+    je  as_diff_medium
+    mov si, offset diff3    ; default to HARD
+    jmp as_diff_write
+as_diff_easy:
+    mov si, offset diff1
+    jmp as_diff_write
+as_diff_medium:
+    mov si, offset diff2
+as_diff_write:
+    mov dl, [si]
+    cmp dl, 0
+    je  as_diff_done
+    call write_char
+    inc si
+    jmp as_diff_write
+as_diff_done:
+
+    ; Write ", "
+    mov dl, ','
+    call write_char
+    mov dl, ' '
     call write_char
 
-    mov dl,13
+    ; Write score as decimal digits
+    ; Score is a word - convert to decimal string and write
+    mov ax, score
+    xor cx, cx              ; digit counter
+
+as_score_div:
+    xor dx, dx
+    mov si, 10
+    div si                  ; AX=quotient, DX=remainder
+    push dx                 ; push digit (0-9)
+    inc cx
+    cmp ax, 0
+    jne as_score_div
+
+    ; Handle score = 0 edge case
+    cmp cx, 0
+    jne as_score_pop
+    push 0
+    inc cx
+
+as_score_pop:
+    pop dx
+    add dl, '0'
+    call write_char
+    dec cx
+    cmp cx, 0
+    jne as_score_pop
+
+    ; Write CRLF
+    mov dl, 13
+    call write_char
+    mov dl, 10
     call write_char
 
-    mov dl,10
-    call write_char
-
-    ; close
-    mov ah,3Eh
+    ; Close file
+    mov ah, 3Eh
     int 21h
 
+append_score_done:
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
 
-append_new_user endp
+append_score endp
 
 ; ==========================================
-; WRITE SINGLE CHAR
-; DL = char
+; WRITE SINGLE CHAR TO FILE
+; BX = file handle, DL = char to write
 ; ==========================================
 write_char proc
-    mov ah, 40h
-    mov cx, 1
-
+    push ax
+    push cx
     push dx
-    mov dx, sp
 
-    int 21h
+    mov  write_buf, dl      ; store char in DS variable (DS:DX must be valid)
+    mov  ah, 40h
+    mov  cx, 1
+    mov  dx, offset write_buf
+    int  21h
 
-    pop dx
-
+    pop  dx
+    pop  cx
+    pop  ax
     ret
 write_char endp
 
@@ -635,15 +710,126 @@ print_num endp
 
 ; ===========================
 ;   SCOREBOARD screen
+;   Reads scrboard.txt and displays each line.
+;   Waits for Enter before returning.
 ; ===========================
-show_scoreboard proc 
+show_scoreboard proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+
     call set_video_mode
     call cls
 
     mov dx, offset default_bg
     call draw_bitmap
     
+    mov dh, 01h
+    mov dl, 02h
+    call setcur
+    mov dx, offset name_text
+    call print
     
+    mov dh, 01h
+    mov dl, 08h
+    call setcur
+    mov dx, offset diff_text
+    call print
+
+    mov dh, 01h
+    mov dl, 15h
+    call setcur
+    mov dx, offset score_text
+    call print
+
+    ; Open scoreboard file for reading
+    mov ah, 3Dh
+    mov al, 0
+    mov dx, offset scoreboard_file
+    int 21h
+    jc  scb_no_file
+
+    mov bx, ax
+
+    ; Read up to 1024 bytes
+    mov ah, 3Fh
+    mov cx, 1024
+    mov dx, offset file_buffer
+    int 21h
+    mov bytes_read, ax
+
+    ; Close file
+    push ax
+    mov ah, 3Eh
+    int 21h
+    pop ax
+
+    ; Null-terminate the buffer
+    mov si, offset file_buffer
+    add si, bytes_read
+    mov byte ptr [si], 0
+
+    ; Walk the buffer and display each line
+    mov dh, 03h
+    mov dl, 02h
+    call setcur
+
+    mov si, offset file_buffer
+
+scb_print_loop:
+    mov al, [si]
+    cmp al, 0
+    je  scb_print_done      ; end of buffer
+    
+    ; newline
+    cmp al, 10              
+    je  scb_newline
+    cmp al, 13              
+    je  scb_skip_cr
+
+    ; Print the character
+    call draw_ui_char
+    inc si
+    jmp scb_print_loop
+
+scb_newline:
+    inc si
+    inc ui_row              ; next row
+    mov ui_col, 02h         ; reset column
+    jmp scb_print_loop
+
+scb_skip_cr:
+    inc si
+    jmp scb_print_loop
+
+scb_print_done:
+    jmp scb_wait_enter
+
+scb_no_file:
+    ; Nothing to show - fall through to wait
+
+scb_wait_enter:
+    mov dh, 17h
+    mov dl, 0Fh
+    call setcur
+    mov dx, offset enter_text
+    call print
+
+scb_enter_loop:
+    mov ah, 00h
+    int 16h
+    cmp al, 0Dh             ; Enter key
+    jne scb_enter_loop
+
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
 show_scoreboard endp
 
 ; ======================
@@ -2153,12 +2339,15 @@ skip1:
     je  hard_mode
 
 easy_mode:
+    mov byte ptr [difficulty], 1
     call set_easy_timer
     jmp  restart_game
 medium_mode:
+    mov byte ptr [difficulty], 2
     call set_medium_timer
     jmp  restart_game
 hard_mode:
+    mov byte ptr [difficulty], 3
     call set_hard_timer
     jmp  restart_game
 
@@ -2207,7 +2396,7 @@ w1:
 n1:
     
     ; Squares
-    mov  dh, 14h        ; row 20
+    mov  dh, 14h        
     mov  dl, 03h
     call setcur
     mov  dx, offset m4
@@ -2244,16 +2433,21 @@ w3:
 
 after_input:
     cmp  mistakes, 3
-    jnb  skip2          ; mistakes >= 3 -> game over
+    jnb  game_over          ; mistakes >= 3 -> game over
     jmp  next_round
 round_timeout:
     mov  mistakes, 3
-    jmp  skip2
+    jmp  game_over
+
+game_over:
+    call append_score
+    call show_scoreboard
+
 skip2:
     call show_retry
     cmp  al, 1
     jne  skip_retry
-    jmp  restart_game
+    jmp  skip1
 skip_retry:
     jmp  exit
 
