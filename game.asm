@@ -134,13 +134,12 @@ welcome_text db "WELCOME ", "$"
 .code
 
 init_scoreboard proc
-
     ; Try to open existing file (read-only)
     mov ah, 3Dh
     mov al, 0
     mov dx, offset scoreboard_file
     int 21h
-    jc  isb_create          ; file not found -> create it
+    jc  isb_create          ; if file not found then create it
 
     ; File exists: close it and return
     mov bx, ax
@@ -151,10 +150,10 @@ init_scoreboard proc
 isb_create:
     ; Create new empty file
     mov ah, 3Ch
-    mov cx, 0               ; normal attributes
+    mov cx, 0               
     mov dx, offset scoreboard_file
     int 21h
-    jc  isb_done            ; creation failed (e.g. disk full) - just continue
+    jc  isb_done            
 
     ; Close the newly created file
     mov bx, ax
@@ -163,7 +162,6 @@ isb_create:
 
 isb_done:
     ret
-
 init_scoreboard endp
 
 ; ==========================================
@@ -171,7 +169,6 @@ init_scoreboard endp
 ; ==========================================
 
 show_login_screen proc
-
     call set_video_mode
     call cls
 
@@ -204,10 +201,7 @@ login_proceed:
 
     call copy_username
 
-    call check_user_exists
-
-    cmp user_exists, 1
-    je login_done
+    jmp login_done
 
 login_done:
     call set_video_mode
@@ -223,6 +217,7 @@ login_done:
     call print
 
     mov si, offset current_user
+    
 login_welcome_loop:
     mov al, [si]
     cmp al, 0
@@ -230,16 +225,18 @@ login_welcome_loop:
     call draw_ui_char
     inc si
     jmp login_welcome_loop
+    
 login_welcome_done:
-
     ; pause ~1 second so player can read welcome
     call get_time_cs
     mov bx, ax
+    
 login_pause:
     call get_time_cs
     cmp ax, bx
     jae login_pause_nowrap
     add ax, 6000
+    
 login_pause_nowrap:
     sub ax, bx
     cmp ax, 100
@@ -268,6 +265,7 @@ read_username proc
     mov byte ptr input_buffer+1, 0
     mov cx, 10
     mov si, offset input_buffer+2
+    
 ru_clear:
     mov byte ptr [si], 0
     inc si
@@ -277,16 +275,16 @@ ru_key_loop:
     mov ah, 00h
     int 16h                     ; wait for keypress -> AL=char, AH=scan
 
-    cmp al, 0Dh                 ; Enter
+    cmp al, 0Dh                 
     jne skip_ru_done
     jmp ru_done
+    
 skip_ru_done:
-
     cmp al, 08h                 
     jne skip_ru_backspace
     jmp ru_backspace
+    
 skip_ru_backspace:
-
     ; only accept A-Z, a-z, 0-9
     cmp al, '0'
     jb  ru_key_loop
@@ -312,8 +310,8 @@ ru_accept:
     cmp al, 'a'
     jb  ru_no_upper
     sub al, 20h
+    
 ru_no_upper:
-
     ; store char
     mov si, offset input_buffer+2
     add si, bx
@@ -329,7 +327,7 @@ ru_no_upper:
 ru_backspace:
     mov bl, input_buffer+1
     cmp bl, 0
-    je  ru_key_loop             ; nothing to erase
+    je  ru_key_loop             
 
     dec byte ptr input_buffer+1
     mov bl, input_buffer+1
@@ -347,16 +345,16 @@ ru_backspace:
     xor ax, ax
     mov al, ui_col
     shl ax, 3
-    mov cx, ax      ; CX = pixel column
+    mov cx, ax      
     
     xor ax, ax
     mov al, ui_row
     shl ax, 3
-    mov dx, ax      ; DX = pixel row
+    mov dx, ax      
     
     mov si, 8       ; width = 8 pixels
     mov di, 8       ; height = 8 pixels
-    mov al, 14h     ; cream background color
+    mov al, 14h     ; background color
     call fill_rect
     
     jmp ru_key_loop
@@ -369,14 +367,12 @@ ru_done:
     pop bx
     pop ax
     ret
-
 read_username endp
 
 ; ==========================================
 ; COPY INPUT TO current_user
 ; ==========================================
 copy_username proc
-
     push si
     push di
     push cx
@@ -388,7 +384,6 @@ copy_username proc
     mov di,offset current_user
 
 copy_loop:
-
     cmp cx,0
     je copy_done
 
@@ -402,7 +397,6 @@ copy_loop:
     jmp copy_loop
 
 copy_done:
-
     mov byte ptr [di],0
 
     pop cx
@@ -410,88 +404,7 @@ copy_done:
     pop si
 
     ret
-
 copy_username endp
-
-; ==========================================
-; CHECK IF USER EXISTS
-; ==========================================
-check_user_exists proc
-
-    mov user_exists,0
-
-    ; open file
-    mov ah,3Dh
-    mov al,0
-    mov dx,offset scoreboard_file
-    int 21h
-    jc done_check
-
-    mov bx,ax
-
-    ; read file
-    mov ah,3Fh
-    mov cx,1024
-    mov dx,offset file_buffer
-    int 21h
-
-    mov bytes_read,ax
-
-    ; close file
-    mov ah,3Eh
-    int 21h
-
-    ; search username
-    mov si,offset file_buffer
-    mov di,offset current_user
-
-search_loop:
-
-    mov al,[si]
-
-    cmp al,0
-    je done_check
-
-    cmp al,[di]
-    jne next_char
-
-    push si
-    push di
-
-compare_loop:
-
-    mov al,[si]
-    mov bl,[di]
-
-    cmp bl,0
-    je found_user
-
-    cmp al,bl
-    jne not_match
-
-    inc si
-    inc di
-    jmp compare_loop
-
-found_user:
-
-    mov user_exists,1
-
-not_match:
-
-    pop di
-    pop si
-
-next_char:
-
-    inc si
-    jmp search_loop
-
-done_check:
-
-    ret
-
-check_user_exists endp
 
 ; ==========================================
 ; APPEND SCORE ENTRY TO SCOREBOARD FILE
@@ -512,7 +425,6 @@ append_score proc
     jnc append_score_opened
     jmp append_score_done
 append_score_opened:
-
     mov bx, ax              ; BX = file handle
 
     ; Seek to end of file
@@ -533,7 +445,7 @@ as_name_loop:
     jmp as_name_loop
 
 as_write_comma1:
-    ; Write ", "
+    ; Write comma
     mov dl, ','
     call write_char
     mov dl, ' '
@@ -547,11 +459,14 @@ as_write_comma1:
     je  as_diff_medium
     mov si, offset diff3    ; default to HARD
     jmp as_diff_write
+    
 as_diff_easy:
     mov si, offset diff1
     jmp as_diff_write
+    
 as_diff_medium:
     mov si, offset diff2
+    
 as_diff_write:
     mov dl, [si]
     cmp dl, 0
@@ -559,15 +474,14 @@ as_diff_write:
     call write_char
     inc si
     jmp as_diff_write
+    
 as_diff_done:
-
     ; Write ", "
     mov dl, ','
     call write_char
     mov dl, ' '
     call write_char
 
-    ; Write score as decimal digits
     ; Score is a word - convert to decimal string and write
     mov ax, score
     xor cx, cx              ; digit counter
@@ -612,7 +526,6 @@ append_score_done:
     pop bx
     pop ax
     ret
-
 append_score endp
 
 ; ==========================================
@@ -634,6 +547,7 @@ write_char proc
     pop  cx
     pop  ax
     ret
+    
 write_char endp
 
 ; ======================
@@ -645,6 +559,7 @@ print proc
     push si
 
     mov si, dx
+    
 print_loop:
     mov al, [si]
     cmp al, '$'
@@ -652,11 +567,13 @@ print_loop:
     call draw_ui_char
     inc si
     jmp print_loop
+    
 print_done:
     pop si
     pop bx
     pop ax
     ret
+    
 print endp
 
 ; ======================
@@ -685,7 +602,7 @@ not_zero_pn:
 digit_push_loop:
     xor dx, dx
     div bx              ; AX / 10 -> AX=quotient, DX=remainder
-    push dx             ; Push digit (0-9)
+    push dx             
     inc cx              ; Count digits
     cmp ax, 0
     jne digit_push_loop
@@ -706,6 +623,7 @@ done_print_num:
     pop bx
     pop ax
     ret
+    
 print_num endp
 
 ; ===========================
@@ -844,6 +762,7 @@ rand_0_5 proc
     div bl
     mov al, ah
     ret
+    
 rand_0_5 endp
 
 ; ======================
@@ -868,6 +787,7 @@ get_time_cs proc
     pop dx
     pop bx
     ret
+    
 get_time_cs endp
 
 ; ======================
@@ -880,10 +800,12 @@ update_round_elapsed proc
     cmp ax, bx
     jae elapsed_ok
     add ax, 6000
+    
 elapsed_ok:
     sub ax, bx
     mov round_elapsed_cs, ax
     ret
+    
 update_round_elapsed endp
 
 ; ======================
@@ -956,6 +878,7 @@ draw_timer proc
     pop  bx
     pop  ax
     ret
+    
 draw_timer endp
 
 ; ======================
@@ -974,6 +897,7 @@ start_round_timer proc
     call draw_timer
 
     ret
+    
 start_round_timer endp
 
 ; ======================
@@ -1017,24 +941,28 @@ timer_done:
     pop bx
     pop ax
     ret
+    
 check_round_timer endp
 
 set_easy_timer proc
     mov current_time_limit, 1000
     mov current_max_seconds, 10
     ret
+    
 set_easy_timer endp
 
 set_medium_timer proc
     mov current_time_limit, 500
     mov current_max_seconds, 5
     ret
+    
 set_medium_timer endp
 
 set_hard_timer proc
     mov current_time_limit, 300
     mov current_max_seconds, 3
     ret
+    
 set_hard_timer endp
 
 ; ======================
@@ -1128,6 +1056,7 @@ digit_retry:
 timed_out:
     stc
     ret
+    
 input_digit_timed endp
 
 ; ======================
@@ -1186,6 +1115,7 @@ stats_wait:
     pop  dx
     pop  ax
     ret
+    
 show_round_stats endp
 
 ; ======================
@@ -1211,11 +1141,13 @@ long_beep proc
 
     call get_time_cs
     mov bx, ax
+    
 beep_wait:
     call get_time_cs
     cmp ax, bx
     jae beep_nowrap
     add ax, 6000
+    
 beep_nowrap:
     sub ax, bx
     cmp ax, 70
@@ -1229,6 +1161,7 @@ beep_nowrap:
     pop bx
     pop ax
     ret
+    
 long_beep endp
 
 ; ======================
@@ -1475,18 +1408,8 @@ bitmap_done:
     pop bx
     pop ax
     ret
+    
 draw_bitmap endp
-
-; ======================
-; draw_wallpaper - wrapper for draw_bitmap with default wallpaper
-; ======================
-draw_wallpaper proc
-    push dx
-    mov dx, offset wallpaper_name
-    call draw_bitmap
-    pop dx
-    ret
-draw_wallpaper endp
 
 ; ======================
 ; cls - clears the screen
@@ -1516,6 +1439,7 @@ cls proc
     pop cx
     pop ax
     ret
+    
 cls endp
 
 ; ======================
@@ -1526,6 +1450,7 @@ setcur proc
     mov ui_row, dh
     mov ui_col, dl
     ret
+    
 setcur endp
 
 get_ui_glyph proc
@@ -1570,6 +1495,7 @@ glyph_done:
     pop bx
     pop ax
     ret
+    
 get_ui_glyph endp
 
 draw_ui_char proc
@@ -1598,6 +1524,7 @@ draw_ui_char proc
     mov di, ax
 
     mov bx, si
+    
 ui_row_loop:
     mov cx, bp
     mov dx, di
@@ -1606,30 +1533,35 @@ ui_row_loop:
     jz   ui_skip_0
     mov  al, 10h  ; pink text
     call put_pixel
+    
 ui_skip_0:
     inc cx
     test ah, 08h
     jz   ui_skip_1
     mov  al, 10h  ; pink text
     call put_pixel
+    
 ui_skip_1:
     inc cx
     test ah, 04h
     jz   ui_skip_2
     mov  al, 10h  ; pink text
     call put_pixel
+    
 ui_skip_2:
     inc cx
     test ah, 02h
     jz   ui_skip_3
     mov  al, 10h  ; pink text
     call put_pixel
+    
 ui_skip_3:
     inc cx
     test ah, 01h
     jz   ui_skip_4
     mov  al, 10h  ; pink text
     call put_pixel
+    
 ui_skip_4:
     inc bx
     inc di
@@ -1648,18 +1580,21 @@ ui_skip_4:
     pop bx
     pop ax
     ret
+    
 draw_ui_char endp
 
 set_video_mode proc
     mov ax, 0013h
     int 10h
     ret
+    
 set_video_mode endp
 
 set_text_mode proc
     mov ax, 0003h
     int 10h
     ret
+    
 set_text_mode endp
 
 put_pixel proc
@@ -1671,6 +1606,7 @@ put_pixel proc
     pop bx
     pop ax
     ret
+    
 put_pixel endp
 
 draw_hline proc
@@ -1683,6 +1619,7 @@ draw_hline proc
     mov bx, cx
     mov ah, 0Ch
     mov bh, 00h
+    
 hline_loop:
     cmp si, 0
     je  hline_done
@@ -1691,6 +1628,7 @@ hline_loop:
     inc bx
     dec si
     jmp hline_loop
+    
 hline_done:
     pop si
     pop dx
@@ -1698,6 +1636,7 @@ hline_done:
     pop bx
     pop ax
     ret
+    
 draw_hline endp
 
 draw_vline proc
@@ -1710,6 +1649,7 @@ draw_vline proc
     mov bx, dx
     mov ah, 0Ch
     mov bh, 00h
+    
 vline_loop:
     cmp si, 0
     je  vline_done
@@ -1718,6 +1658,7 @@ vline_loop:
     inc bx
     dec si
     jmp vline_loop
+    
 vline_done:
     pop si
     pop dx
@@ -1725,6 +1666,7 @@ vline_done:
     pop bx
     pop ax
     ret
+    
 draw_vline endp
 
 fill_rect proc
@@ -1736,6 +1678,7 @@ fill_rect proc
     push di
 
     mov bx, dx
+    
 fill_row_loop:
     cmp di, 0
     je  fill_done
@@ -1746,6 +1689,7 @@ fill_row_loop:
     inc bx
     dec di
     jmp fill_row_loop
+    
 fill_done:
     pop di
     pop si
@@ -1754,6 +1698,7 @@ fill_done:
     pop bx
     pop ax
     ret
+    
 fill_rect endp
 
 draw_rect proc
@@ -1794,6 +1739,7 @@ draw_rect proc
     pop bx
     pop ax
     ret
+    
 draw_rect endp
 
 draw_diag_down_right proc
@@ -1806,6 +1752,7 @@ draw_diag_down_right proc
 
     mov bx, cx
     mov bp, dx
+    
 diag_r_loop:
     cmp si, 0
     je  diag_r_done
@@ -1816,6 +1763,7 @@ diag_r_loop:
     inc bp
     dec si
     jmp diag_r_loop
+    
 diag_r_done:
     pop si
     pop dx
@@ -1824,6 +1772,7 @@ diag_r_done:
     pop bx
     pop ax
     ret
+    
 draw_diag_down_right endp
 
 draw_diag_down_left proc
@@ -1836,6 +1785,7 @@ draw_diag_down_left proc
 
     mov bx, cx
     mov bp, dx
+    
 diag_l_loop:
     cmp si, 0
     je  diag_l_done
@@ -1846,6 +1796,7 @@ diag_l_loop:
     inc bp
     dec si
     jmp diag_l_loop
+    
 diag_l_done:
     pop si
     pop dx
@@ -1854,6 +1805,7 @@ diag_l_done:
     pop bx
     pop ax
     ret
+    
 draw_diag_down_left endp
 
 draw_circle_shape proc
@@ -1875,6 +1827,7 @@ circle_y_loop:
     cmp bx, 19
     jge circle_done
     mov si, -18
+    
 circle_x_loop:
     cmp si, 19
     jge circle_next_row
@@ -1892,6 +1845,7 @@ circle_x_loop:
     add dx, bx
     mov al, circle_color
     call put_pixel
+    
 circle_skip_fill:
     mov ax, si
     imul ax
@@ -1909,12 +1863,15 @@ circle_skip_fill:
     add dx, bx
     mov al, circle_color
     call put_pixel
+    
 circle_next_x:
     inc si
     jmp circle_x_loop
+    
 circle_next_row:
     inc bx
     jmp circle_y_loop
+    
 circle_done:
     pop bp
     pop di
@@ -1924,6 +1881,7 @@ circle_done:
     pop bx
     pop ax
     ret
+    
 draw_circle_shape endp
 
 draw_square_shape proc
@@ -1948,6 +1906,7 @@ draw_square_shape proc
     pop cx
     pop ax
     ret
+    
 draw_square_shape endp
 
 draw_triangle_shape proc
@@ -2006,6 +1965,7 @@ tri_outline:
     pop bx
     pop ax
     ret
+    
 draw_triangle_shape endp
 
 draw_panel proc
@@ -2036,6 +1996,7 @@ draw_panel proc
     pop cx
     pop ax
     ret
+    
 draw_panel endp
 
 
@@ -2065,12 +2026,15 @@ menu_wait:
     cmp al, '2'
     je menu_q
     jmp menu_wait
+    
 menu_s:
     mov al, 1
     ret
+    
 menu_q:
     mov al, 0
     ret
+    
 show_menu endp
 
 ; ======================
@@ -2093,15 +2057,19 @@ show_difficulty_menu_wait:
     cmp al, '3'
     je diff_hard
     jmp show_difficulty_menu_wait
+    
 diff_easy:
     mov al, 1
     ret
+    
 diff_medium:
     mov al, 2
     ret
+    
 diff_hard:
     mov al, 3
     ret
+    
 show_difficulty_menu endp
 
 ; ======================
@@ -2127,7 +2095,7 @@ show_retry proc
     mov  dh, 07h
     mov  dl, 05h
     call setcur
-    mov  dx, offset score_text        ; "SCORE "
+    mov  dx, offset score_text        
     call print
     mov  ax, score
     call print_num
@@ -2135,7 +2103,7 @@ show_retry proc
     mov  dh, 07h
     mov  dl, 18h
     call setcur
-    mov  dx, offset mistake        ; "MISTAKES "
+    mov  dx, offset mistake       
     call print
     mov  al, mistakes
     call print_num
@@ -2169,12 +2137,15 @@ retry_wait:
     cmp  al, '2'
     je   do_quit_r
     jmp  retry_wait
+    
 do_retry:
     mov  al, 1
     ret
+    
 do_quit_r:
     mov  al, 0
     ret
+    
 show_retry endp
 
 ; ========================================
@@ -2188,6 +2159,7 @@ gen_shapes proc
     cmp al, bl
     jbe ok1
     mov al, bl
+    
 ok1:
     mov correctC, al
 
@@ -2197,6 +2169,7 @@ ok1:
     cmp al, bl
     jbe ok2
     mov al, bl
+    
 ok2:
     mov correctS, al
 
@@ -2207,6 +2180,7 @@ ok2:
 
     mov cx, 6
     mov si, offset shape_list
+    
 clear_loop:
     mov byte ptr [si], 0
     inc si
@@ -2217,6 +2191,7 @@ clear_loop:
     mov cl, correctC
     cmp cl, 0
     je check_s
+    
 fill_c:
     mov byte ptr [si], 1
     inc si
@@ -2227,6 +2202,7 @@ check_s:
     mov cl, correctS
     cmp cl, 0
     je check_t
+    
 fill_s:
     mov byte ptr [si], 2
     inc si
@@ -2237,6 +2213,7 @@ check_t:
     mov cl, correctT
     cmp cl, 0
     je done_fill
+    
 fill_t:
     mov byte ptr [si], 3
     inc si
@@ -2245,6 +2222,7 @@ fill_t:
 
 done_fill:
     ret
+    
 gen_shapes endp
 
 ; ======================
@@ -2259,6 +2237,7 @@ draw_shapes proc
     push di
 
     xor bx, bx
+    
 shape_loop:
     cmp bx, 6
     jge done_draw
@@ -2275,8 +2254,10 @@ shape_loop:
     sub ax, 3
     mov dx, y_positions + 2
     jmp shape_pos_ready
+    
 top_row:
     mov dx, y_positions[0]
+    
 shape_pos_ready:
     shl ax, 1
     mov si, ax
@@ -2295,9 +2276,11 @@ shape_pos_ready:
 pixel_circle:
     call draw_circle_shape
     jmp next_shape
+    
 pixel_square:
     call draw_square_shape
     jmp next_shape
+    
 pixel_triangle:
     call draw_triangle_shape
 
@@ -2313,6 +2296,7 @@ done_draw:
     pop bx
     pop ax
     ret
+    
 draw_shapes endp
 
 ; ======================
@@ -2329,6 +2313,7 @@ start:
     cmp  al, 0
     jne  skip1
     jmp  exit
+    
 skip1:
     call show_difficulty_menu
     cmp al, 1
@@ -2342,10 +2327,12 @@ easy_mode:
     mov byte ptr [difficulty], 1
     call set_easy_timer
     jmp  restart_game
+    
 medium_mode:
     mov byte ptr [difficulty], 2
     call set_medium_timer
     jmp  restart_game
+    
 hard_mode:
     mov byte ptr [difficulty], 3
     call set_hard_timer
@@ -2373,7 +2360,6 @@ game_loop:
     mov  dx, offset msg ; COUNT THE SHAPES
     call print
 
-    ; --- Draw shapes (rows 3-15) ---
     call draw_shapes
     call check_round_timer
 
